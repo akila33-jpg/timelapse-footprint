@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="format-detection" content="telephone=no">
+<title>時光足跡</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23000'/%3E%3Ccircle cx='16' cy='16' r='6.5' fill='none' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  [hidden] { display: none !important; }
+  html, body {
+    margin: 0; height: 100%; background: #000; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Helvetica Neue", "WenQuanYi Micro Hei", sans-serif;
+    font-size: 16px;
+  }
+  button, input { font-family: inherit; color: inherit; }
+  button { cursor: pointer; touch-action: manipulation; }
+  button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  #app { position: relative; height: 100%; height: 100dvh; overflow: hidden; }
+  .view { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+  .view.on { visibility: visible; pointer-events: auto; z-index: 1; }
+  #view-camera.on { z-index: 2; }
+
+  #preview {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; background: #000; pointer-events: none;
+  }
+  #preview.mirror { transform: scaleX(-1); }
+  #snap { position: absolute; left: -10000px; top: 0; }
+  #flash {
+    position: absolute; inset: 0; background: #fff; opacity: 0;
+    pointer-events: none; z-index: 2;
+  }
+  #flash.fire { animation: shutterFlash .2s ease-out; }
+  @keyframes shutterFlash {
+    0% { opacity: 0; } 18% { opacity: .9; } 100% { opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #flash.fire { animation: none; }
+    #shutter::before { transition: none; }
+  }
+
+  .cam-top, .cam-bottom { position: absolute; left: 0; right: 0; z-index: 3; }
+  .cam-top {
+    top: 0;
+    display: grid; grid-template-columns: 44px 1fr 44px; align-items: center;
+    padding: calc(8px + env(safe-area-inset-top)) 12px 28px;
+    background: linear-gradient(to bottom, rgba(0,0,0,.62), rgba(0,0,0,0));
+  }
+  .cam-status {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; letter-spacing: .02em; font-variant-numeric: tabular-nums;
+  }
+  #recDot {
+    width: 8px; height: 8px; border-radius: 50%; background: #ff3b30;
+    margin-right: 6px; display: none;
+  }
+  #recDot.on { display: inline-block; }
+  .cam-bottom {
+    bottom: 0;
+    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+    padding: 36px 28px calc(22px + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, rgba(0,0,0,.78) 10%, rgba(0,0,0,.35) 58%, rgba(0,0,0,0));
+  }
+  .cam-bottom .left { justify-self: start; }
+  .cam-bottom .right { justify-self: end; }
+  .iconbtn {
+    width: 44px; height: 44px; border: 0; border-radius: 50%;
+    background: transparent; color: #fff; display: grid; place-items: center; padding: 0;
+  }
+  .iconbtn:active { opacity: .55; }
+  .iconbtn.is-hidden { visibility: hidden; }
+  #shutter {
+    width: 78px; height: 78px; border-radius: 50%;
+    border: 3px solid #fff; background: transparent; padding: 0;
+    display: grid; place-items: center;
+  }
+  #shutter::before {
+    content: ""; width: 64px; height: 64px; border-radius: 50%; background: #fff;
+    transition: transform .08s ease;
+  }
+  #shutter:active::before { transform: scale(.9); }
+  #shutter.busy::before { background: #c7c7cc; }
+  .thumb {
+    width: 48px; height: 48px; padding: 0; overflow: hidden;
+    border-radius: 8px; border: 2px solid rgba(255,255,255,.9);
+    background: rgba(255,255,255,.14); display: block;
+  }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #toast {
+    position: absolute; z-index: 4; left: 50%;
+    bottom: calc(132px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    max-width: calc(100% - 48px);
+    background: rgba(28,28,30,.86); color: #fff;
+    font-size: 13px; line-height: 1.35; text-align: center;
+    padding: 8px 12px; border-radius: 10px;
+    opacity: 0; pointer-events: none; transition: opacity .2s ease;
+  }
+  #toast.show { opacity: 1; }
+  #camFallback {
+    position: absolute; inset: 0; z-index: 2;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; padding: 24px 32px 120px; text-align: center;
+    color: rgba(255,255,255,.88); font-size: 15px;
+  }
+  #camFallback p { margin: 0; }
+  #btnEnableCam {
+    border: 1px solid rgba(255,255,255,.6); background: transparent; color: #fff;
+    border-radius: 999px; padding: 8px 18px; font-size: 15px;
+  }
+  #camFallback .fine { font-size: 13px; color: rgba(255,255,255,.55); }
+  #fileFallback {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); border: 0; opacity: 0;
+  }
+
+  #map { position: absolute; inset: 0; background: #1c1c1e; }
+  .leaflet-container { font-family: inherit; background: #1c1c1e; }
+  .leaflet-top.leaflet-right { top: calc(58px + env(safe-area-inset-top)); right: 8px; }
+  .leaflet-control-container { z-index: 650; }
+  .leaflet-bottom.leaflet-right {
+    top: calc(102px + env(safe-area-inset-top)) !important;
+    bottom: auto !important;
+    left: 8px !important;
+    right: auto !important;
+  }
+  .leaflet-bar { border: 0 !important; box-shadow: none; }
+  .leaflet-bar a {
+    background: rgba(28,28,30,.92); color: #fff; border: 0;
+    width: 36px; height: 36px; line-height: 36px;
+  }
+  .leaflet-bar a:hover { background: rgba(44,44,46,.95); color: #fff; }
+  .leaflet-bar a:first-child { border-radius: 10px 10px 0 0; }
+  .leaflet-bar a:last-child { border-radius: 0 0 10px 10px; border-top: 1px solid rgba(255,255,255,.12); }
+  .leaflet-control-attribution {
+    font-size: 10px; background: rgba(255,255,255,.78) !important;
+  }
+  .photo-marker {
+    border-radius: 8px; overflow: hidden; background: #111;
+    border: 2px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.45);
+  }
+  .photo-marker img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+  .map-top {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 800;
+    display: flex; align-items: flex-start;
+    padding: calc(4px + env(safe-area-inset-top)) 6px 20px;
+    background: linear-gradient(to bottom, rgba(0,0,0,.55), rgba(0,0,0,0));
+    pointer-events: none; color: #fff;
+  }
+  .map-actions-left { display: flex; pointer-events: auto; }
+  .map-title {
+    position: absolute; left: 50%; top: calc(10px + env(safe-area-inset-top));
+    transform: translateX(-50%); text-align: center; pointer-events: none;
+  }
+  .map-title b { display: block; font-size: 16px; font-weight: 600; letter-spacing: .04em; }
+  .map-title small { display: block; margin-top: 2px; font-size: 11px; letter-spacing: 0; color: rgba(255,255,255,.78); }
+
+  .map-panel {
+    position: absolute; z-index: 800;
+    left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom));
+    background: rgba(28,28,30,.92); color: #fff;
+    border-radius: 18px; padding: 14px 14px 6px;
+    box-shadow: 0 10px 28px rgba(0,0,0,.35);
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+  }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; }
+  .stats b {
+    display: block; font-size: 22px; font-weight: 600; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .stats span { display: block; margin-top: 2px; font-size: 11px; color: rgba(235,235,245,.55); }
+  #modeChip { margin: 8px 0 0; text-align: center; font-size: 12px; color: rgba(235,235,245,.62); }
+  #btnPhotos {
+    display: block; width: 100%; margin: 0; border: 0; background: transparent;
+    color: #0a84ff; font-size: 13px; padding: 4px;
+  }
+  #btnToggle {
+    width: 100%; height: 48px; margin-top: 6px; border: 0; border-radius: 24px;
+    background: #fff; color: #000; font-size: 17px; font-weight: 600;
+  }
+  #btnToggle.rec { background: #ff3b30; color: #fff; }
+  .textrow { display: flex; }
+  .textrow button {
+    flex: 1; border: 0; background: transparent; color: #f2f2f7;
+    font-size: 15px; padding: 8px 4px;
+  }
+  #msg {
+    min-height: 32px; margin: 0 4px 6px; text-align: center;
+    font-size: 12px; line-height: 1.4; color: rgba(235,235,245,.55);
+  }
+
+  #sheet:not([hidden]) { position: fixed; inset: 0; z-index: 4500; }
+  .sheet-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.48); }
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    background: #1c1c1e; border-radius: 14px 14px 0 0;
+    padding: 8px 16px calc(16px + env(safe-area-inset-bottom));
+  }
+  .grab { width: 36px; height: 4px; border-radius: 2px; background: #48484a; margin: 4px auto 8px; }
+  .sheet h2 { margin: 4px 0 14px; text-align: center; font-size: 17px; font-weight: 600; }
+  .sheet-label { margin: 0 0 8px; font-size: 13px; color: #8e8e93; }
+  .seg { display: flex; gap: 2px; background: #2c2c2e; border-radius: 9px; padding: 2px; }
+  .seg button {
+    flex: 1; border: 0; background: transparent; color: #fff;
+    border-radius: 7px; padding: 8px 0; font-size: 15px; font-weight: 500;
+  }
+  .seg button[aria-checked="true"] { background: #636366; }
+  .sheet-help { margin: 12px 2px 0; min-height: 3.6em; font-size: 13px; line-height: 1.45; color: #ebebf5; }
+  .sheet-done {
+    width: 100%; margin-top: 14px; border: 0; border-radius: 12px;
+    background: #fff; color: #000; padding: 12px; font-size: 16px; font-weight: 600;
+  }
+  .ver { margin: 12px 0 0; text-align: center; font-size: 12px; color: #636366; }
+
+  #gallery:not([hidden]) {
+    position: fixed; inset: 0; z-index: 5000; background: #000;
+    display: flex; flex-direction: column;
+  }
+  .ghead {
+    display: grid; grid-template-columns: 44px 1fr 44px; align-items: center;
+    padding: calc(4px + env(safe-area-inset-top)) 6px 6px;
+  }
+  .ghead h2 { margin: 0; text-align: center; font-size: 17px; font-weight: 600; }
+  #galleryGrid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px;
+    overflow: auto; -webkit-overflow-scrolling: touch; align-content: start;
+  }
+  .gcell {
+    position: relative; padding: 0; border: 0; background: #1c1c1e;
+    aspect-ratio: 1; overflow: hidden;
+  }
+  .gcell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gbadge {
+    position: absolute; left: 4px; bottom: 4px;
+    background: #ffd60a; color: #1c1c1e; font-size: 10px; font-weight: 700;
+    border-radius: 4px; padding: 1px 4px;
+  }
+  #galleryEmpty { margin: auto; color: rgba(235,235,245,.6); font-size: 15px; }
+
+  #viewer:not([hidden]) {
+    position: fixed; inset: 0; z-index: 6000; background: #000;
+    display: flex; flex-direction: column;
+  }
+  .xbtn {
+    position: absolute; top: calc(10px + env(safe-area-inset-top)); left: 10px; z-index: 2;
+    width: 40px; height: 40px; border: 0; border-radius: 50%;
+    background: rgba(0,0,0,.4); color: #fff; display: grid; place-items: center;
+  }
+  #viewerImg { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
+  .meta { flex: none; padding: 14px 20px calc(16px + env(safe-area-inset-bottom)); }
+  #viewerTime { font-size: 17px; font-weight: 600; }
+  #viewerCoord { margin-top: 4px; font-size: 14px; color: rgba(235,235,245,.75); }
+  #viewerCoord.warn { color: #ffd60a; }
+  #btnDelete {
+    margin-top: 10px; border: 0; background: transparent; color: #ff453a;
+    font-size: 15px; padding: 6px 0;
+  }
+  noscript p { color: #fff; padding: 24px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <section id="view-camera" class="view" aria-label="相機">
+    <video id="preview" autoplay playsinline muted webkit-playsinline disablepictureinpicture></video>
+    <canvas id="snap" width="2" height="2" aria-hidden="true"></canvas>
+    <div id="flash"></div>
+    <div id="camFallback" hidden>
+      <p>無法開啟即時預覽</p>
+      <button type="button" id="btnEnableCam">開啟相機</button>
+      <p class="fine">按下快門會改用系統相機</p>
+    </div>
+    <header class="cam-top">
+      <button type="button" class="iconbtn" id="btnSettings" aria-label="設定">
+        <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.64l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.52-.4-1.08-.73-1.69-.98l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.61.25-1.17.59-1.69.98l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.64l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.52.4 1.08.73 1.69.98l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.61-.25 1.17-.58 1.69-.98l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.64l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>
+      </button>
+      <div class="cam-status"><span id="recDot"></span><span id="camStatus">尚未定位</span></div>
+      <button type="button" class="iconbtn is-hidden" id="btnFlip" aria-label="翻轉鏡頭">
+        <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M20 12a8 8 0 0 1-13.7 5.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M4 12a8 8 0 0 1 13.7-5.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M16 3.5v4h4M8 20.5v-4H4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </header>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <footer class="cam-bottom">
+      <div class="left">
+        <button type="button" class="iconbtn" id="btnToMap" aria-label="地圖">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M9 4 3 6.5v13L9 17l6 3 6-2.5v-13L15 7 9 4z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 4v13M15 7v13" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+      </div>
+      <button type="button" id="shutter" aria-label="拍照"></button>
+      <div class="right">
+        <button type="button" class="thumb" id="btnGallery" aria-label="照片">
+          <img id="thumbImg" alt="" hidden>
+        </button>
+      </div>
+    </footer>
+    <input id="fileFallback" type="file" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+  </section>
+
+  <section id="view-map" class="view" aria-label="地圖">
+    <div id="map"></div>
+    <header class="map-top">
+      <div class="map-actions-left">
+        <button type="button" class="iconbtn" id="btnToCam" aria-label="相機">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M4.5 8.5h3l1.4-2h6.2l1.4 2h3a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18v-8a1.5 1.5 0 0 1 1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="13.2" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+        <button type="button" class="iconbtn" id="btnSettingsMap" aria-label="設定">
+          <svg viewBox="0 0 24 24" width="23" height="23" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.64l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.52-.4-1.08-.73-1.69-.98l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.61.25-1.17.59-1.69.98l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.64l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.52.4 1.08.73 1.69.98l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.61-.25 1.17-.58 1.69-.98l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.64l-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>
+        </button>
+      </div>
+      <div class="map-title">
+        <b>時光足跡</b>
+        <small id="mapStatus">待機中</small>
+      </div>
+    </header>
+    <div class="map-panel">
+      <div class="stats">
+        <div class="stat"><b id="sDist">0.00</b><span>公里</span></div>
+        <div class="stat"><b id="sTime">00:00:00</b><span>時間</span></div>
+        <div class="stat"><b id="sPts">0</b><span>軌跡點</span></div>
+      </div>
+      <p id="modeChip">定位：一般</p>
+      <button type="button" id="btnPhotos">照片 0</button>
+      <button type="button" id="btnToggle">開始記錄</button>
+      <div class="textrow">
+        <button type="button" id="btnExport">匯出 GPX</button>
+        <button type="button" id="btnClear">清除軌跡</button>
+      </div>
+      <p id="msg">點「開始記錄」沿路留下軌跡。照片會標在地圖上。</p>
+    </div>
+  </section>
+</div>
+
+<div id="sheet" hidden>
+  <div class="sheet-backdrop" id="sheetBackdrop"></div>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <div class="grab"></div>
+    <h2 id="sheetTitle">設定</h2>
+    <p class="sheet-label">定位</p>
+    <div class="seg" role="radiogroup" aria-label="定位模式">
+      <button type="button" id="modeOff" data-mode="off" role="radio" aria-checked="false">關閉</button>
+      <button type="button" id="modeNormal" data-mode="normal" role="radio" aria-checked="true">一般</button>
+      <button type="button" id="modePower" data-mode="power" role="radio" aria-checked="false">省電</button>
+    </div>
+    <p id="modeHelp" class="sheet-help"></p>
+    <button type="button" class="sheet-done" id="btnCloseSheet">完成</button>
+    <p class="ver" id="verLabel">時光足跡 v0.2</p>
+  </div>
+</div>
+
+<div id="gallery" hidden>
+  <header class="ghead">
+    <button type="button" class="iconbtn" id="btnCloseGallery" aria-label="關閉">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
+    <h2>照片</h2>
+    <span></span>
+  </header>
+  <p id="galleryEmpty" hidden>還沒有照片</p>
+  <div id="galleryGrid"></div>
+</div>
+
+<div id="viewer" hidden role="dialog" aria-modal="true" aria-label="照片">
+  <button type="button" class="xbtn" id="btnCloseViewer" aria-label="關閉">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+  </button>
+  <img id="viewerImg" alt="">
+  <div class="meta">
+    <div id="viewerTime"></div>
+    <div id="viewerCoord"></div>
+    <button type="button" id="btnDelete">刪除照片</button>
+  </div>
+</div>
+<noscript><p>時光足跡需要開啟 JavaScript。</p></noscript>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  /* 時光足跡 v0.2 — 單檔、無建置、無金鑰。
+   * 軌跡 localStorage tf_track_v01 = { track:[{lat,lng,t,acc}], accumulatedMs }
+   *   與 v0.1 相同。不要改 key，不要拿掉這兩個欄位。
+   * 設定 localStorage tf_settings_v02 = { gpsMode:"off"|"normal"|"power" }
+   * 照片 IndexedDB tf_photos_v02 / object store photos / keyPath id
+   *   { id, t, lat, lng, acc, coordNote, blob }
+   *   有座標時 coordNote 為 null；否則 off|weak|denied|timeout|unavailable
+   * 定位：off 完全不呼叫 Geolocation。
+   *   normal：enableHighAccuracy、移動 <5m 不記、誤差 >50m 不記、記錄中可螢幕恆亮。
+   *   power：enableHighAccuracy false、移動 <20m 不記、maximumAge 30 秒、不螢幕恆亮。
+   *   省電模式的精度門檻仍是 50 公尺。
+   * 照片座標：定位關閉就沒有座標。否則沿用 20 秒內（省電 60 秒）的良好定位，
+   *   沒有才呼叫 getCurrentPosition（maximumAge 0）。
+   * 改完 index.html 請複製成 v0.2.html。不要改 v0.1.html。
+   */
+  var APP_VERSION = '0.2';
+  var STORE_KEY = 'tf_track_v01';
+  var SETTINGS_KEY = 'tf_settings_v02';
+  var DB_NAME = 'tf_photos_v02';
+  var DB_STORE = 'photos';
+  var MAX_ACCURACY_M = 50;
+  var MIN_MOVE_NORMAL_M = 5;
+  var MIN_MOVE_POWER_M = 20;
+  var LONG_EDGE = 1600;
+
+  var settings = { gpsMode: 'normal' };
+  var track = [];
+  var accumulatedMs = 0;
+  var startedAt = null;
+  var recording = false;
+  var stopped = false;
+  var watchId = null;
+  var timer = null;
+  var wakeLock = null;
+  var lastGood = null;
+  var gpsError = '';
+
+  var map = null;
+  var casing = null;
+  var line = null;
+  var me = null;
+  var photoList = [];
+  var photoUrls = {};
+  var photoMarkers = {};
+  var currentId = null;
+
+  var stream = null;
+  var facing = 'environment';
+  var camToken = 0;
+  var busy = false;
+  var toastTimer = null;
+  var dbPromise = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+  var video = $('preview');
+
+  function minMove() {
+    return settings.gpsMode === 'power' ? MIN_MOVE_POWER_M : MIN_MOVE_NORMAL_M;
+  }
+  function distM(a, b) {
+    var R = 6371000, toRad = Math.PI / 180;
+    var dLat = (b.lat - a.lat) * toRad, dLng = (b.lng - a.lng) * toRad;
+    var s = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(a.lat * toRad) * Math.cos(b.lat * toRad) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * R * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+  }
+  function totalKm() {
+    var m = 0;
+    for (var i = 1; i < track.length; i++) m += distM(track[i - 1], track[i]);
+    return m / 1000;
+  }
+  function fmtTime(ms) {
+    var s = Math.floor(ms / 1000);
+    var h = String(Math.floor(s / 3600)).padStart(2, '0');
+    var m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+    var sec = String(s % 60).padStart(2, '0');
+    return h + ':' + m + ':' + sec;
+  }
+  function fmtStamp(t) {
+    try {
+      return new Date(t).toLocaleString('zh-TW', {
+        year: 'numeric', month: 'long', day: 'numeric',
+        hour: 'numeric', minute: '2-digit'
+      });
+    } catch (e) { return ''; }
+  }
+  function coordLabel(note) {
+    if (note === 'off') return '無座標（定位已關閉）';
+    if (note === 'weak') return '無座標（訊號不足）';
+    if (note === 'denied') return '無座標（未允許定位）';
+    if (note === 'timeout') return '無座標（定位逾時）';
+    return '無座標（無法取得定位）';
+  }
+  function coordText(p) {
+    if (p.lat == null || p.lng == null) return coordLabel(p.coordNote);
+    var acc = (p.acc != null && isFinite(Number(p.acc))) ? (' · 誤差約 ' + Math.round(Number(p.acc)) + ' 公尺') : '';
+    return Number(p.lat).toFixed(5) + ', ' + Number(p.lng).toFixed(5) + acc;
+  }
+  function setMsg(t) { $('msg').textContent = t; }
+  function toast(text) {
+    var el = $('toast');
+    el.textContent = text;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 2200);
+  }
+  function flash() {
+    var el = $('flash');
+    el.classList.remove('fire');
+    void el.offsetWidth;
+    el.classList.add('fire');
+  }
+
+  function loadSettings() {
+    try {
+      var d = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+      if (d && (d.gpsMode === 'off' || d.gpsMode === 'normal' || d.gpsMode === 'power')) {
+        settings.gpsMode = d.gpsMode;
+      }
+    } catch (e) {}
+  }
+  function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ gpsMode: settings.gpsMode })); }
+    catch (e) {}
+  }
+  function loadTrack() {
+    try {
+      var raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return;
+      var d = JSON.parse(raw);
+      if (!d || !Array.isArray(d.track)) return;
+      track = d.track.filter(function (p) {
+        return p && isFinite(Number(p.lat)) && isFinite(Number(p.lng));
+      });
+      track.forEach(function (p) {
+        p.lat = Number(p.lat);
+        p.lng = Number(p.lng);
+      });
+      accumulatedMs = Number(d.accumulatedMs) || 0;
+    } catch (e) {}
+  }
+  function save() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        track: track,
+        accumulatedMs: accumulatedMs + (startedAt ? Date.now() - startedAt : 0)
+      }));
+    } catch (e) {}
+  }
+
+  function render() {
+    $('sDist').textContent = totalKm().toFixed(2);
+    $('sPts').textContent = String(track.length);
+    var ms = accumulatedMs + (startedAt ? Date.now() - startedAt : 0);
+    $('sTime').textContent = fmtTime(ms);
+  }
+  function mapStatusText() {
+    if (recording) {
+      if (settings.gpsMode === 'off') return '記錄中 · 定位關閉';
+      if (settings.gpsMode === 'power') return '記錄中 · 省電';
+      return '記錄中';
+    }
+    return stopped ? '已停止' : '待機中';
+  }
+  function updateButtons() {
+    var b = $('btnToggle');
+    if (recording) {
+      b.textContent = '停止';
+      b.classList.add('rec');
+    } else {
+      b.textContent = (track.length || accumulatedMs) ? '繼續記錄' : '開始記錄';
+      b.classList.remove('rec');
+    }
+    $('mapStatus').textContent = mapStatusText();
+  }
+  function updateCamStatus() {
+    $('recDot').classList.toggle('on', recording);
+    var el = $('camStatus');
+    if (settings.gpsMode === 'off') { el.textContent = '定位關閉'; return; }
+    var prefix = settings.gpsMode === 'power' ? '省電 · ' : '';
+    if (!lastGood) { el.textContent = prefix + (gpsError || '尚未定位'); return; }
+    el.textContent = prefix + '已定位 · ' + Math.round(Number(lastGood.acc)) + ' 公尺';
+  }
+  function updateModeUI() {
+    var buttons = document.querySelectorAll('.seg button');
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute('aria-checked', buttons[i].getAttribute('data-mode') === settings.gpsMode ? 'true' : 'false');
+    }
+    var help = {
+      off: '停止所有定位。之後的照片不會記錄座標，並標示為無座標。',
+      normal: '高精度定位。誤差超過 50 公尺、移動少於 5 公尺不記入軌跡；記錄時盡量保持螢幕恆亮。',
+      power: '降低定位耗電：不要求高精度、約移動 20 公尺才記一點、可沿用較久的定位，且不保持螢幕恆亮。誤差超過 50 公尺的點仍會捨棄。'
+    };
+    $('modeHelp').textContent = help[settings.gpsMode] || '';
+    var chip = { off: '定位：關閉', normal: '定位：一般', power: '定位：省電' };
+    $('modeChip').textContent = chip[settings.gpsMode] || '';
+  }
+  function updatePhotoCount() {
+    var missing = 0;
+    for (var i = 0; i < photoList.length; i++) if (photoList[i].lat == null) missing++;
+    $('btnPhotos').textContent = missing
+      ? ('照片 ' + photoList.length + ' · ' + missing + ' 張無座標')
+      : ('照片 ' + photoList.length);
+  }
+
+  function watchOptions() {
+    if (settings.gpsMode === 'power') {
+      return { enableHighAccuracy: false, maximumAge: 30000, timeout: 30000 };
+    }
+    return { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 };
+  }
+  function noteFix(p) {
+    lastGood = { lat: p.lat, lng: p.lng, acc: p.acc, t: p.t || Date.now() };
+    gpsError = '';
+    if (me && map) {
+      me.setLatLng([p.lat, p.lng]);
+      if (!map.hasLayer(me)) me.addTo(map);
+    }
+    updateCamStatus();
+  }
+  function onPos(pos) {
+    if (!recording || settings.gpsMode === 'off' || !pos || !pos.coords) return;
+    var c = pos.coords;
+    var p = { lat: c.latitude, lng: c.longitude, t: pos.timestamp, acc: c.accuracy };
+    if (!(p.acc <= MAX_ACCURACY_M)) {
+      setMsg('定位訊號較弱（誤差 ' + Math.round(p.acc) + ' 公尺），等待更準的訊號…');
+      gpsError = '訊號較弱';
+      updateCamStatus();
+      return;
+    }
+    noteFix(p);
+    var last = track[track.length - 1];
+    if (last && distM(last, p) < minMove()) return;
+    track.push(p);
+    if (casing) casing.addLatLng([p.lat, p.lng]);
+    if (line) line.addLatLng([p.lat, p.lng]);
+    if (map) {
+      var visible = $('view-map').classList.contains('on');
+      if (track.length === 1) map.setView([p.lat, p.lng], 17, { animate: visible });
+      else focusPoint(p.lat, p.lng);
+    }
+    setMsg('定位正常，誤差約 ' + Math.round(p.acc) + ' 公尺');
+    save();
+    render();
+  }
+  function onErr(err) {
+    var code = err && err.code;
+    var m = {
+      1: '你拒絕了定位權限，請到瀏覽器設定開啟。',
+      2: '抓不到位置，請到空曠處再試。',
+      3: '定位逾時，重新嘗試中…'
+    };
+    gpsError = code === 1 ? '未允許定位' : (code === 2 ? '抓不到位置' : '定位逾時');
+    setMsg(m[code] || ('定位錯誤：' + ((err && err.message) || '')));
+    updateCamStatus();
+  }
+  function focusPoint(lat, lng) {
+    if (!map) return;
+    try {
+      var z = map.getZoom();
+      var pt = map.project([lat, lng], z).add([0, 100]);
+      map.panTo(map.unproject(pt, z), { animate: $('view-map').classList.contains('on') });
+    } catch (e) {
+      map.panTo([lat, lng]);
+    }
+  }
+  function restartWatch() {
+    if (watchId !== null && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+    if (!recording || settings.gpsMode === 'off') return;
+    if (!('geolocation' in navigator)) { setMsg('這個瀏覽器不支援定位。'); return; }
+    if (!window.isSecureContext) { setMsg('定位需要 https 或 localhost。'); return; }
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, watchOptions());
+  }
+  function syncWake() {
+    if (recording && settings.gpsMode === 'normal') lockScreen();
+    else unlockScreen();
+  }
+  async function lockScreen() {
+    try {
+      if (navigator.wakeLock && !wakeLock) wakeLock = await navigator.wakeLock.request('screen');
+    } catch (e) { wakeLock = null; }
+  }
+  function unlockScreen() {
+    var w = wakeLock;
+    wakeLock = null;
+    try { if (w) w.release(); } catch (e) {}
+  }
+
+  function startRecording() {
+    if (recording) return;
+    if (settings.gpsMode !== 'off') {
+      if (!('geolocation' in navigator)) { setMsg('這個瀏覽器不支援定位。'); return; }
+      if (!window.isSecureContext) { setMsg('定位需要 https 或 localhost。'); return; }
+    }
+    recording = true;
+    startedAt = Date.now();
+    stopped = false;
+    restartWatch();
+    clearInterval(timer);
+    timer = setInterval(render, 1000);
+    syncWake();
+    render();
+    updateButtons();
+    updateCamStatus();
+    if (settings.gpsMode === 'off') setMsg('定位已關閉，只會計時，不會寫入新的軌跡點。');
+    else setMsg('正在取得定位…');
+  }
+  function stopRecording() {
+    if (!recording) return;
+    if (watchId !== null && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+    }
+    clearInterval(timer);
+    timer = null;
+    if (startedAt) accumulatedMs += Date.now() - startedAt;
+    startedAt = null;
+    recording = false;
+    stopped = true;
+    syncWake();
+    save();
+    render();
+    updateButtons();
+    updateCamStatus();
+    setMsg('已停止，軌跡存在這支手機裡。');
+  }
+  function clearTrack() {
+    if (recording) { setMsg('請先停止記錄，再清除軌跡。'); return; }
+    if (!track.length && !accumulatedMs) { setMsg('還沒有軌跡可以清除。'); return; }
+    if (!confirm('確定清除這條軌跡嗎？照片會保留。')) return;
+    track = [];
+    accumulatedMs = 0;
+    stopped = false;
+    if (casing) casing.setLatLngs([]);
+    if (line) line.setLatLngs([]);
+    if (map && me && map.hasLayer(me)) map.removeLayer(me);
+    try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+    render();
+    updateButtons();
+    setMsg('已清除軌跡。照片仍保留。');
+  }
+  function setMode(mode) {
+    if (mode !== 'off' && mode !== 'normal' && mode !== 'power') return;
+    if (settings.gpsMode === mode) { updateModeUI(); return; }
+    settings.gpsMode = mode;
+    saveSettings();
+    updateModeUI();
+    if (recording) {
+      restartWatch();
+      syncWake();
+      updateButtons();
+      if (mode === 'off') setMsg('定位已關閉，暫停寫入軌跡。');
+      else setMsg(mode === 'power' ? '已改為省電模式。' : '已改為一般模式。');
+    }
+    updateCamStatus();
+  }
+
+  function resolveLocation() {
+    if (settings.gpsMode === 'off') return Promise.resolve({ note: 'off' });
+    if (!('geolocation' in navigator) || !window.isSecureContext) {
+      return Promise.resolve({ note: 'unavailable' });
+    }
+    var freshMs = settings.gpsMode === 'power' ? 60000 : 20000;
+    if (lastGood && lastGood.acc <= MAX_ACCURACY_M && (Date.now() - lastGood.t) <= freshMs && (Date.now() - lastGood.t) >= -5000) {
+      return Promise.resolve(lastGood);
+    }
+    var opts = watchOptions();
+    opts.maximumAge = 0;
+    return new Promise(function (resolve) {
+      var done = false;
+      var timerId = setTimeout(function () {
+        if (done) return;
+        done = true;
+        resolve({ note: 'timeout' });
+      }, opts.timeout || 20000);
+      navigator.geolocation.getCurrentPosition(function (pos) {
+        if (done) return;
+        done = true;
+        clearTimeout(timerId);
+        if (settings.gpsMode === 'off') { resolve({ note: 'off' }); return; }
+        var c = pos.coords;
+        if (!(c.accuracy <= MAX_ACCURACY_M)) { resolve({ note: 'weak', acc: c.accuracy }); return; }
+        var fix = { lat: c.latitude, lng: c.longitude, acc: c.accuracy, t: pos.timestamp || Date.now() };
+        noteFix(fix);
+        resolve(fix);
+      }, function (err) {
+        if (done) return;
+        done = true;
+        clearTimeout(timerId);
+        resolve({ note: err && err.code === 1 ? 'denied' : 'unavailable' });
+      }, opts);
+    });
+  }
+
+  function openDb() {
+    if (dbPromise) return dbPromise;
+    if (!window.indexedDB) return Promise.reject(new Error('no-idb'));
+    dbPromise = new Promise(function (resolve, reject) {
+      var req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE, { keyPath: 'id' });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { dbPromise = null; reject(req.error); };
+    });
+    return dbPromise;
+  }
+  function idbGetAll() {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(DB_STORE, 'readonly');
+        var req = tx.objectStore(DB_STORE).getAll();
+        req.onsuccess = function () { resolve(req.result || []); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+  function idbPut(rec) {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put(rec);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+        tx.onabort = function () { reject(tx.error || new Error('abort')); };
+      });
+    });
+  }
+  function idbDelete(id) {
+    return openDb().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).delete(id);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    });
+  }
+
+  function initMap() {
+    if (!window.L) {
+      setMsg('地圖載入失敗。拍照仍可使用，但暫時無法顯示地圖。');
+      return;
+    }
+    map = L.map('map', { zoomControl: false }).setView([22.6273, 120.3014], 13);
+    L.control.zoom({ position: 'topright' }).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+    casing = L.polyline([], { color: '#ffffff', weight: 9, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+    line = L.polyline([], { color: '#0a84ff', weight: 5, opacity: 1, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+    me = L.circleMarker([22.6273, 120.3014], {
+      radius: 7, color: '#fff', weight: 2, fillColor: '#0a84ff', fillOpacity: 1
+    });
+  }
+  function drawTrack() {
+    var ll = track.map(function (p) { return [p.lat, p.lng]; });
+    if (casing) casing.setLatLngs(ll);
+    if (line) line.setLatLngs(ll);
+    if (track.length && me && map) {
+      var last = track[track.length - 1];
+      me.setLatLng([last.lat, last.lng]);
+      if (!map.hasLayer(me)) me.addTo(map);
+    }
+  }
+  function maybeFit() {
+    if (!map || recording) return;
+    var ll = [];
+    track.forEach(function (p) { if (isFinite(p.lat) && isFinite(p.lng)) ll.push([p.lat, p.lng]); });
+    photoList.forEach(function (p) {
+      if (p.lat != null && isFinite(Number(p.lat)) && isFinite(Number(p.lng))) ll.push([Number(p.lat), Number(p.lng)]);
+    });
+    if (!ll.length) return;
+    if (ll.length === 1) map.setView(ll[0], 16);
+    else map.fitBounds(ll, { paddingTopLeft: [28, 72], paddingBottomRight: [28, 220], maxZoom: 17 });
+  }
+  function addMarker(rec) {
+    if (!map || rec.lat == null || !photoUrls[rec.id] || photoMarkers[rec.id]) return;
+    var marker = L.marker([rec.lat, rec.lng], {
+      icon: L.divIcon({
+        className: 'photo-marker',
+        html: '<img alt="" src="' + photoUrls[rec.id].replace(/"/g, '%22') + '">',
+        iconSize: [46, 46],
+        iconAnchor: [23, 23]
+      }),
+      zIndexOffset: 600,
+      keyboard: true,
+      alt: '照片'
+    });
+    marker.on('click', function () { openViewer(rec.id); });
+    marker.addTo(map);
+    photoMarkers[rec.id] = marker;
+  }
+  function refreshThumb() {
+    var latest = null;
+    photoList.forEach(function (p) { if (!latest || p.t >= latest.t) latest = p; });
+    var img = $('thumbImg');
+    if (!latest || !photoUrls[latest.id]) { img.hidden = true; img.removeAttribute('src'); return; }
+    img.src = photoUrls[latest.id];
+    img.hidden = false;
+  }
+  function rememberPhoto(rec) {
+    if (!rec || !rec.blob) return;
+    photoList.push(rec);
+    photoUrls[rec.id] = URL.createObjectURL(rec.blob);
+    addMarker(rec);
+    refreshThumb();
+    updatePhotoCount();
+    if (!$('gallery').hidden) renderGallery();
+  }
+  function loadPhotos() {
+    return idbGetAll().then(function (rows) {
+      rows.sort(function (a, b) { return a.t - b.t; });
+      rows.forEach(rememberPhoto);
+      maybeFit();
+    }).catch(function () {
+      toast('無法讀取已儲存的照片');
+    });
+  }
+
+  function frameToJpeg(source, mirror) {
+    var sw = source.videoWidth || source.naturalWidth || source.width;
+    var sh = source.videoHeight || source.naturalHeight || source.height;
+    if (!sw || !sh) return Promise.reject(new Error('size'));
+    var edge = Math.max(sw, sh);
+    var scale = edge > LONG_EDGE ? LONG_EDGE / edge : 1;
+    var w = Math.max(1, Math.round(sw * scale));
+    var h = Math.max(1, Math.round(sh * scale));
+    var canvas = $('snap');
+    canvas.width = w;
+    canvas.height = h;
+    var ctx = canvas.getContext('2d');
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+    if (mirror) { ctx.translate(w, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(source, 0, 0, w, h);
+    ctx.restore();
+    return new Promise(function (resolve, reject) {
+      canvas.toBlob(function (blob) {
+        if (!blob) reject(new Error('blob'));
+        else resolve(blob);
+      }, 'image/jpeg', 0.85);
+    });
+  }
+  function fileToJpeg(file) {
+    if (window.createImageBitmap) {
+      var bitmapPromise;
+      try { bitmapPromise = createImageBitmap(file, { imageOrientation: 'from-image' }); }
+      catch (e) { bitmapPromise = createImageBitmap(file); }
+      return Promise.resolve(bitmapPromise).catch(function () {
+        return createImageBitmap(file);
+      }).then(function (bitmap) {
+        return frameToJpeg(bitmap, false).then(function (blob) {
+          if (bitmap.close) bitmap.close();
+          return blob;
+        }, function (err) {
+          if (bitmap.close) bitmap.close();
+          throw err;
+        });
+      });
+    }
+    var url = URL.createObjectURL(file);
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { reject(new Error('img')); };
+      img.src = url;
+    }).then(function (img) {
+      return frameToJpeg(img, false);
+    }).then(function (blob) {
+      URL.revokeObjectURL(url);
+      return blob;
+    }, function (err) {
+      URL.revokeObjectURL(url);
+      throw err;
+    });
+  }
+  function savePhoto(blob, takenAt) {
+    var t = takenAt || Date.now();
+    return resolveLocation().then(function (loc) {
+      var has = !!(loc && loc.lat != null && loc.lng != null);
+      var rec = {
+        id: 'p_' + t + '_' + Math.random().toString(36).slice(2, 8),
+        t: t,
+        lat: has ? loc.lat : null,
+        lng: has ? loc.lng : null,
+        acc: has && loc.acc != null ? loc.acc : null,
+        coordNote: has ? null : ((loc && loc.note) || 'unavailable'),
+        blob: blob
+      };
+      return idbPut(rec).then(function () {
+        rememberPhoto(rec);
+        if (has && map && track.length === 0) {
+          var n = 0;
+          photoList.forEach(function (p) { if (p.lat != null) n++; });
+          if (n === 1) map.setView([rec.lat, rec.lng], 16);
+        }
+        toast(has ? '已儲存照片' : ('已儲存，' + coordLabel(rec.coordNote)));
+      });
+    }).catch(function () {
+      toast('照片沒有儲存成功，請確認瀏覽器允許網站儲存資料。');
+    });
+  }
+  function setBusy(on) {
+    busy = on;
+    $('shutter').classList.toggle('busy', on);
+  }
+  function captureFromVideo() {
+    if (busy) return;
+    if (!video.videoWidth) { toast('相機畫面還沒準備好'); return; }
+    var takenAt = Date.now();
+    setBusy(true);
+    flash();
+    frameToJpeg(video, facing === 'user').then(function (blob) {
+      return savePhoto(blob, takenAt);
+    }).catch(function () {
+      toast('拍照失敗，請再試一次');
+    }).then(function () { setBusy(false); });
+  }
+
+  function setLive(on) {
+    $('camFallback').hidden = !!on;
+    $('btnFlip').classList.toggle('is-hidden', !on);
+  }
+  function stopStream() {
+    if (!stream) return;
+    stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+    stream = null;
+    video.srcObject = null;
+  }
+  function startCamera() {
+    var my = ++camToken;
+    $('camFallback').hidden = true;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (my === camToken) setLive(false);
+      return Promise.resolve(false);
+    }
+    stopStream();
+    var constraints = {
+      audio: false,
+      video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    };
+    return navigator.mediaDevices.getUserMedia(constraints).catch(function () {
+      return navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+    }).then(function (newStream) {
+      if (my !== camToken) {
+        newStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+        return false;
+      }
+      stream = newStream;
+      video.srcObject = newStream;
+      video.muted = true;
+      video.playsInline = true;
+      video.classList.toggle('mirror', facing === 'user');
+      var play = video.play();
+      return Promise.resolve(play).catch(function () {}).then(function () {
+        if (my !== camToken) return false;
+        setLive(true);
+        return true;
+      });
+    }).catch(function () {
+      if (my !== camToken) return false;
+      stopStream();
+      setLive(false);
+      return false;
+    });
+  }
+  function stopCamera() {
+    camToken++;
+    stopStream();
+    $('btnFlip').classList.add('is-hidden');
+  }
+
+  function showView(name) {
+    var cam = name === 'camera';
+    $('view-camera').classList.toggle('on', cam);
+    $('view-map').classList.toggle('on', !cam);
+    $('view-camera').setAttribute('aria-hidden', cam ? 'false' : 'true');
+    $('view-map').setAttribute('aria-hidden', cam ? 'true' : 'false');
+    if (cam) startCamera();
+    else {
+      stopCamera();
+      if (map) setTimeout(function () { map.invalidateSize(); }, 60);
+    }
+  }
+
+  function findPhoto(id) {
+    for (var i = 0; i < photoList.length; i++) if (photoList[i].id === id) return photoList[i];
+    return null;
+  }
+  function openViewer(id) {
+    var rec = findPhoto(id);
+    if (!rec || !photoUrls[id]) return;
+    currentId = id;
+    $('viewerImg').src = photoUrls[id];
+    $('viewerTime').textContent = fmtStamp(rec.t);
+    $('viewerCoord').textContent = coordText(rec);
+    $('viewerCoord').classList.toggle('warn', rec.lat == null);
+    $('viewer').hidden = false;
+  }
+  function renderGallery() {
+    var grid = $('galleryGrid');
+    grid.textContent = '';
+    var items = photoList.slice().sort(function (a, b) { return b.t - a.t; });
+    $('galleryEmpty').hidden = items.length > 0;
+    items.forEach(function (p) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'gcell';
+      btn.setAttribute('aria-label', p.lat == null ? '無座標照片' : '照片');
+      var img = document.createElement('img');
+      img.src = photoUrls[p.id] || '';
+      img.alt = '';
+      btn.appendChild(img);
+      if (p.lat == null) {
+        var badge = document.createElement('span');
+        badge.className = 'gbadge';
+        badge.textContent = '無座標';
+        btn.appendChild(badge);
+      }
+      btn.onclick = function () { openViewer(p.id); };
+      grid.appendChild(btn);
+    });
+  }
+  function openGallery() {
+    renderGallery();
+    $('gallery').hidden = false;
+  }
+  function iso(t) {
+    var d = new Date(t);
+    return isNaN(d.getTime()) ? '' : d.toISOString();
+  }
+  function exportGpx() {
+    var wpts = photoList.filter(function (p) {
+      return p.lat != null && p.lng != null && isFinite(Number(p.lat)) && isFinite(Number(p.lng));
+    }).slice().sort(function (a, b) { return a.t - b.t; });
+    if (!track.length && !wpts.length) {
+      setMsg('還沒有軌跡或有座標的照片可以匯出。');
+      return;
+    }
+    var wptXml = wpts.map(function (p, i) {
+      var time = iso(p.t);
+      return '<wpt lat="' + Number(p.lat) + '" lon="' + Number(p.lng) + '">' +
+        (time ? '<time>' + time + '</time>' : '') +
+        '<name>照片 ' + (i + 1) + '</name></wpt>';
+    }).join('');
+    var pts = track.map(function (p) {
+      var time = iso(p.t);
+      return '<trkpt lat="' + Number(p.lat) + '" lon="' + Number(p.lng) + '">' +
+        (time ? '<time>' + time + '</time>' : '') + '</trkpt>';
+    }).join('');
+    var gpx = '<?xml version="1.0" encoding="UTF-8"?>' +
+      '<gpx version="1.1" creator="TimeFootprint" xmlns="http://www.topografix.com/GPX/1/1">' +
+      wptXml + '<trk><name>時光足跡</name><trkseg>' + pts + '</trkseg></trk></gpx>';
+    var a = document.createElement('a');
+    var url = URL.createObjectURL(new Blob([gpx], { type: 'application/gpx+xml' }));
+    a.href = url;
+    a.download = 'time-footprint-' + new Date().toISOString().slice(0, 10) + '.gpx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2500);
+    setMsg(wpts.length ? ('已匯出 GPX，含 ' + wpts.length + ' 張照片座標。') : '已匯出 GPX。');
+  }
+
+  $('btnSettings').onclick = function () { updateModeUI(); $('sheet').hidden = false; };
+  $('btnSettingsMap').onclick = function () { updateModeUI(); $('sheet').hidden = false; };
+  $('sheetBackdrop').onclick = function () { $('sheet').hidden = true; };
+  $('btnCloseSheet').onclick = function () { $('sheet').hidden = true; };
+  var seg = document.querySelectorAll('.seg button');
+  for (var s = 0; s < seg.length; s++) {
+    seg[s].onclick = function () { setMode(this.getAttribute('data-mode')); };
+  }
+  $('btnToMap').onclick = function () { showView('map'); };
+  $('btnToCam').onclick = function () { showView('camera'); };
+  $('btnFlip').onclick = function () {
+    if (!stream || busy) return;
+    facing = facing === 'environment' ? 'user' : 'environment';
+    startCamera();
+  };
+  $('btnEnableCam').onclick = function () { startCamera(); };
+  $('shutter').onclick = function () {
+    if (busy) return;
+    if (stream) {
+      if (video.videoWidth > 0) captureFromVideo();
+      else toast('相機畫面還沒準備好');
+      return;
+    }
+    $('fileFallback').click();
+  };
+  $('fileFallback').onchange = function () {
+    var file = $('fileFallback').files && $('fileFallback').files[0];
+    $('fileFallback').value = '';
+    if (!file || busy) return;
+    var takenAt = Date.now();
+    setBusy(true);
+    flash();
+    fileToJpeg(file).then(function (blob) {
+      return savePhoto(blob, takenAt);
+    }).catch(function () {
+      toast('無法讀取這張照片');
+    }).then(function () { setBusy(false); });
+  };
+  $('btnGallery').onclick = openGallery;
+  $('btnPhotos').onclick = openGallery;
+  $('btnCloseGallery').onclick = function () { $('gallery').hidden = true; };
+  $('btnCloseViewer').onclick = function () { $('viewer').hidden = true; };
+  $('btnDelete').onclick = function () {
+    if (!currentId) return;
+    if (!confirm('確定刪除這張照片嗎？刪除後無法復原。')) return;
+    var id = currentId;
+    idbDelete(id).then(function () {
+      if (photoMarkers[id] && map) map.removeLayer(photoMarkers[id]);
+      delete photoMarkers[id];
+      if (photoUrls[id]) URL.revokeObjectURL(photoUrls[id]);
+      delete photoUrls[id];
+      photoList = photoList.filter(function (p) { return p.id !== id; });
+      currentId = null;
+      $('viewer').hidden = true;
+      refreshThumb();
+      updatePhotoCount();
+      if (!$('gallery').hidden) renderGallery();
+      toast('已刪除照片');
+    }).catch(function () { toast('刪除失敗'); });
+  };
+  $('btnToggle').onclick = function () {
+    if (recording) stopRecording();
+    else startRecording();
+  };
+  $('btnClear').onclick = clearTrack;
+  $('btnExport').onclick = exportGpx;
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') {
+      syncWake();
+      if ($('view-camera').classList.contains('on') && !stream) startCamera();
+    }
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape') return;
+    if (!$('viewer').hidden) { $('viewer').hidden = true; return; }
+    if (!$('gallery').hidden) { $('gallery').hidden = true; return; }
+    if (!$('sheet').hidden) $('sheet').hidden = true;
+  });
+
+  loadSettings();
+  loadTrack();
+  initMap();
+  drawTrack();
+  updateModeUI();
+  updateButtons();
+  render();
+  updateCamStatus();
+  $('verLabel').textContent = '時光足跡 v' + APP_VERSION;
+  showView('camera');
+  loadPhotos();
+  requestAnimationFrame(function () {
+    if (map) map.invalidateSize();
+    maybeFit();
+  });
+  setInterval(function () { if (recording) save(); }, 5000);
+})();
+</script>
+</body>
+</html>
