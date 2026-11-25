@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>時光足跡 v0.1</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#1b1713; --card:#2a231c; --accent:#e8a33d; --text:#f3e9d8; --muted:#a8977f; --danger:#d9534f; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; }
+  #app { display:flex; flex-direction:column; height:100%; }
+  header { padding:10px 14px; display:flex; align-items:center; justify-content:space-between; }
+  header h1 { font-size:18px; margin:0; letter-spacing:2px; color:var(--accent); }
+  #status { font-size:12px; color:var(--muted); }
+  #map { flex:1; min-height:200px; }
+  #panel { background:var(--card); padding:12px 14px 16px; border-top:1px solid #3a3025; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:12px; text-align:center; }
+  .stat b { display:block; font-size:20px; font-variant-numeric:tabular-nums; }
+  .stat span { font-size:11px; color:var(--muted); }
+  .row { display:flex; gap:8px; }
+  button { flex:1; padding:14px 8px; font-size:16px; font-weight:600; border:0; border-radius:12px;
+    background:var(--accent); color:#2a1d08; cursor:pointer; }
+  button.secondary { background:#3d3327; color:var(--text); }
+  button.danger { background:var(--danger); color:#fff; }
+  button:disabled { opacity:.4; }
+  #msg { margin-top:10px; font-size:12px; color:var(--muted); min-height:16px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>時光足跡</h1>
+    <div id="status">待機中</div>
+  </header>
+  <div id="map"></div>
+  <div id="panel">
+    <div class="stats">
+      <div class="stat"><b id="sDist">0.00</b><span>公里</span></div>
+      <div class="stat"><b id="sTime">00:00:00</b><span>時間</span></div>
+      <div class="stat"><b id="sPts">0</b><span>軌跡點</span></div>
+    </div>
+    <div class="row">
+      <button id="btnStart">開始記錄</button>
+      <button id="btnStop" class="danger" disabled>停止</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="btnExport" class="secondary">匯出 GPX</button>
+      <button id="btnClear" class="secondary">清除軌跡</button>
+    </div>
+    <div id="msg">提示：網頁版需要保持畫面開啟才會持續記錄。</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+  var STORE_KEY = 'tf_track_v01';
+  var MIN_MOVE_M = 5;        // 移動少於 5 公尺不記點，省電又減少雜訊
+  var MAX_ACCURACY_M = 50;   // 定位誤差大於 50 公尺的點丟掉
+
+  var map = L.map('map', { zoomControl: false }).setView([22.6273, 120.3014], 13); // 預設高雄
+  L.control.zoom({ position: 'topright' }).addTo(map);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+
+  var line = L.polyline([], { color: '#e8a33d', weight: 5, opacity: 0.9 }).addTo(map);
+  var me = L.circleMarker([0, 0], { radius: 8, color: '#fff', weight: 2, fillColor: '#e8a33d', fillOpacity: 1 });
+
+  var track = [];          // {lat, lng, t, acc}
+  var watchId = null;
+  var startedAt = null;    // 本次開始時間
+  var accumulatedMs = 0;   // 先前累積的記錄時間
+  var timer = null;
+  var wakeLock = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function load() {
+    try {
+      var raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return;
+      var d = JSON.parse(raw);
+      track = d.track || [];
+      accumulatedMs = d.accumulatedMs || 0;
+      line.setLatLngs(track.map(function (p) { return [p.lat, p.lng]; }));
+      if (track.length) map.fitBounds(line.getBounds(), { padding: [30, 30] });
+    } catch (e) {}
+  }
+  function save() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        track: track,
+        accumulatedMs: accumulatedMs + (startedAt ? Date.now() - startedAt : 0)
+      }));
+    } catch (e) {}
+  }
+
+  function distM(a, b) {
+    var R = 6371000, toRad = Math.PI / 180;
+    var dLat = (b.lat - a.lat) * toRad, dLng = (b.lng - a.lng) * toRad;
+    var s = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(a.lat * toRad) * Math.cos(b.lat * toRad) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * R * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+  }
+  function totalKm() {
+    var m = 0;
+    for (var i = 1; i < track.length; i++) m += distM(track[i - 1], track[i]);
+    return m / 1000;
+  }
+  function fmtTime(ms) {
+    var s = Math.floor(ms / 1000);
+    var h = String(Math.floor(s / 3600)).padStart(2, '0');
+    var m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+    var sec = String(s % 60).padStart(2, '0');
+    return h + ':' + m + ':' + sec;
+  }
+  function render() {
+    $('sDist').textContent = totalKm().toFixed(2);
+    $('sPts').textContent = track.length;
+    var ms = accumulatedMs + (startedAt ? Date.now() - startedAt : 0);
+    $('sTime').textContent = fmtTime(ms);
+  }
+  function setMsg(t) { $('msg').textContent = t; }
+
+  function onPos(pos) {
+    var c = pos.coords;
+    var p = { lat: c.latitude, lng: c.longitude, t: pos.timestamp, acc: c.accuracy };
+    me.setLatLng([p.lat, p.lng]);
+    if (!map.hasLayer(me)) me.addTo(map);
+
+    if (p.acc > MAX_ACCURACY_M) { setMsg('定位訊號較弱（誤差 ' + Math.round(p.acc) + ' 公尺），等待更準的訊號…'); return; }
+    var last = track[track.length - 1];
+    if (last && distM(last, p) < MIN_MOVE_M) return;
+
+    track.push(p);
+    line.addLatLng([p.lat, p.lng]);
+    map.panTo([p.lat, p.lng], { animate: true });
+    if (track.length === 1) map.setZoom(17);
+    setMsg('定位正常，誤差約 ' + Math.round(p.acc) + ' 公尺');
+    save(); render();
+  }
+  function onErr(err) {
+    var m = { 1: '你拒絕了定位權限，請到瀏覽器設定開啟。', 2: '抓不到位置，請到空曠處再試。', 3: '定位逾時，重新嘗試中…' };
+    setMsg(m[err.code] || ('定位錯誤：' + err.message));
+  }
+
+  async function lockScreen() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  function unlockScreen() { try { if (wakeLock) wakeLock.release(); } catch (e) {} wakeLock = null; }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && watchId !== null) lockScreen();
+  });
+
+  $('btnStart').onclick = function () {
+    if (!('geolocation' in navigator)) { setMsg('這個瀏覽器不支援定位。'); return; }
+    if (!window.isSecureContext) { setMsg('定位需要 https 網址（GitHub Pages 可以）。'); return; }
+    startedAt = Date.now();
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, {
+      enableHighAccuracy: true, maximumAge: 2000, timeout: 20000
+    });
+    timer = setInterval(render, 1000);
+    lockScreen();
+    $('status').textContent = '記錄中…';
+    $('btnStart').disabled = true; $('btnStop').disabled = false;
+    setMsg('正在取得定位…');
+  };
+
+  $('btnStop').onclick = function () {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    clearInterval(timer);
+    if (startedAt) accumulatedMs += Date.now() - startedAt;
+    startedAt = null;
+    unlockScreen(); save(); render();
+    $('status').textContent = '已停止';
+    $('btnStart').disabled = false; $('btnStop').disabled = true;
+    $('btnStart').textContent = '繼續記錄';
+    setMsg('已停止，軌跡已存在這支手機裡。');
+  };
+
+  $('btnClear').onclick = function () {
+    if (watchId !== null) { setMsg('請先按停止，再清除軌跡。'); return; }
+    if (!track.length) return;
+    if (!confirm('確定清除這條軌跡嗎？')) return;
+    track = []; accumulatedMs = 0; line.setLatLngs([]);
+    if (map.hasLayer(me)) map.removeLayer(me);
+    localStorage.removeItem(STORE_KEY);
+    $('btnStart').textContent = '開始記錄';
+    $('status').textContent = '待機中';
+    render(); setMsg('已清除。');
+  };
+
+  $('btnExport').onclick = function () {
+    if (!track.length) { setMsg('還沒有軌跡可以匯出。'); return; }
+    var pts = track.map(function (p) {
+      return '<trkpt lat="' + p.lat + '" lon="' + p.lng + '"><time>' + new Date(p.t).toISOString() + '</time></trkpt>';
+    }).join('');
+    var gpx = '<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="TimeFootprint" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>時光足跡</name><trkseg>' + pts + '</trkseg></trk></gpx>';
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([gpx], { type: 'application/gpx+xml' }));
+    a.download = 'time-footprint-' + new Date().toISOString().slice(0, 10) + '.gpx';
+    a.click();
+    setMsg('已匯出 GPX 檔。');
+  };
+
+  load(); render();
+})();
+</script>
+</body>
+</html>
